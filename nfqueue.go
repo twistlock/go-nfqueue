@@ -75,9 +75,7 @@ func (nfqueue *Nfqueue) SetVerdictBatch(id uint32, verdict int) error {
 	return nfqueue.setVerdict(id, verdict, true, []byte{})
 }
 
-// Register your own function as callback for a netfilter queue
-func (nfqueue *Nfqueue) Register(ctx context.Context, fn HookFunc) error {
-
+func (nfqueue *Nfqueue) Unbind() error {
 	// unbinding existing handler (if any)
 	seq, err := nfqueue.setConfig(unix.AF_UNSPEC, 0, 0, []netlink.Attribute{
 		{Type: nfQaCfgCmd, Data: []byte{nfUlnlCfgCmdPfUnbind, 0x0, 0x0, byte(nfqueue.family)}},
@@ -85,13 +83,27 @@ func (nfqueue *Nfqueue) Register(ctx context.Context, fn HookFunc) error {
 	if err != nil {
 		return errors.Wrapf(err, "Could not unbind existing handlers (if any)")
 	}
+	_, err = nfqueue.setConfig(uint8(unix.AF_UNSPEC), seq, nfqueue.queue, []netlink.Attribute{
+		{Type: nfQaCfgCmd, Data: []byte{nfUlnlCfgCmdUnbind, 0x0, 0x0, byte(nfqueue.family)}},
+	})
+	return err
+}
+
+func (nfqueue *Nfqueue) Bind() (seq uint32, err error) {
+	// unbinding existing handler (if any)
+	seq, err = nfqueue.setConfig(unix.AF_UNSPEC, 0, 0, []netlink.Attribute{
+		{Type: nfQaCfgCmd, Data: []byte{nfUlnlCfgCmdPfUnbind, 0x0, 0x0, byte(nfqueue.family)}},
+	})
+	if err != nil {
+		return 0, errors.Wrapf(err, "Could not unbind existing handlers (if any)")
+	}
 
 	// binding to family
 	_, err = nfqueue.setConfig(unix.AF_UNSPEC, seq, 0, []netlink.Attribute{
 		{Type: nfQaCfgCmd, Data: []byte{nfUlnlCfgCmdPfBind, 0x0, 0x0, byte(nfqueue.family)}},
 	})
 	if err != nil {
-		return errors.Wrapf(err, "Could not bind to family %d", nfqueue.family)
+		return 0, errors.Wrapf(err, "Could not bind to family %d", nfqueue.family)
 	}
 
 	// binding to the requested queue
@@ -99,7 +111,7 @@ func (nfqueue *Nfqueue) Register(ctx context.Context, fn HookFunc) error {
 		{Type: nfQaCfgCmd, Data: []byte{nfUlnlCfgCmdBind, 0x0, 0x0, byte(nfqueue.family)}},
 	})
 	if err != nil {
-		return errors.Wrapf(err, "Could not bind to requested queue %d", nfqueue.queue)
+		return 0, errors.Wrapf(err, "Could not bind to requested queue %d", nfqueue.queue)
 	}
 
 	// set copy mode and buffer size
@@ -108,7 +120,7 @@ func (nfqueue *Nfqueue) Register(ctx context.Context, fn HookFunc) error {
 		{Type: nfQaCfgParams, Data: data},
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var attrs []netlink.Attribute
@@ -121,12 +133,45 @@ func (nfqueue *Nfqueue) Register(ctx context.Context, fn HookFunc) error {
 
 	_, err = nfqueue.setConfig(uint8(unix.AF_UNSPEC), seq, nfqueue.queue, attrs)
 	if err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
+// Register your own function as callback for a netfilter queue
+func (nfqueue *Nfqueue) Register(ctx context.Context, fn HookFunc) error {
+	seq, err := nfqueue.Bind()
+	if err != nil {
 		return err
 	}
 
 	go nfqueue.socketCallback(ctx, fn, seq)
-
 	return nil
+}
+
+func (nfqueue *Nfqueue) Recv() ([]Attribute, error) {
+	msgs, err := nfqueue.Con.Receive()
+	if err != nil {
+		return nil, err
+	}
+
+	var attrs []Attribute
+
+	for _, msg := range msgs {
+		if msg.Header.Type == netlink.Done {
+			// this is the last message of a batch
+			// continue to receive messages
+			break
+		}
+		m, err := parseMsg(nfqueue.logger, msg)
+		if err != nil {
+			nfqueue.logger.Printf("Could not parse message: %v", err)
+			continue
+		}
+		attrs = append(attrs, m)
+	}
+
+	return attrs, nil
 }
 
 // /include/uapi/linux/netfilter/nfnetlink.h:struct nfgenmsg{} res_id is Big Endian
