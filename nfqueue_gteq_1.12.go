@@ -10,7 +10,7 @@ import (
 
 	"github.com/twistlock/go-nfqueue/internal/unix"
 
-	"github.com/mdlayher/netlink"
+	"github.com/twistlock/netlink"
 )
 
 // Nfqueue represents a netfilter queue handler
@@ -38,7 +38,8 @@ func Open(config *Config) (*Nfqueue, error) {
 		return nil, ErrInvFlag
 	}
 
-	con, err := netlink.Dial(unix.NETLINK_NETFILTER, &netlink.Config{NetNS: config.NetNS})
+	// Disable netlink goroutine spawned in a different namespce, if no explicit network namespace is specified in the config
+	con, err := netlink.Dial(unix.NETLINK_NETFILTER, &netlink.Config{NetNS: config.NetNS, DisableNSGoroutine: config.NetNS == 0})
 	if err != nil {
 		return nil, err
 	}

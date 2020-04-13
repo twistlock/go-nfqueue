@@ -8,7 +8,7 @@ import (
 
 	"github.com/twistlock/go-nfqueue/internal/unix"
 
-	"github.com/mdlayher/netlink"
+	"github.com/twistlock/netlink"
 )
 
 func extractAttribute(log *log.Logger, a *Attribute, data []byte) error {
